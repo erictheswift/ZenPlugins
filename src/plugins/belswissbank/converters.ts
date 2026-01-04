@@ -1,6 +1,6 @@
 import { AccountOrCard, AccountType, Movement, Transaction } from '../../types/zenmoney'
 import codeToCurrencyLookup from '../../common/codeToCurrencyLookup'
-import _ from 'lodash'
+import { ApiCard, ApiAccount, ApiTransaction } from './api'
 
 export interface ConvertResult {
   product: {
@@ -136,28 +136,26 @@ export interface ConvertResult {
         "isRenewal": false
     },
    */
-export function convertCards (apiCards: unknown[]): ConvertResult[] {
+export function convertCards (apiCards: ApiCard[]): ConvertResult[] {
   return apiCards
-    .filter(card => _.get(card, 'active') === true && _.get(card, 'isDeleted') === false && _.get(card, 'isHiddenBalance') === false)
+    .filter(card => card.active && !card.isDeleted && !card.isHiddenBalance)
     .map(card => {
-      const currencies = _.get(card, 'currencies') as number
-      const currencyLetter = _.get(card, 'currencyLetter') as string
-      const instrument = (currencyLetter != null && currencyLetter !== '') ? currencyLetter : (codeToCurrencyLookup[currencies] ?? 'BYN')
+      const instrument = (card.currencyLetter !== '') ? card.currencyLetter : (codeToCurrencyLookup[card.currencies] ?? 'BYN')
 
       return {
         product: {
-          id: Number(_.get(card, 'id'))
+          id: card.id
         },
         account: {
-          id: String(_.get(card, 'id')),
+          id: String(card.id),
           type: AccountType.ccard,
-          title: _.get(card, 'name'),
+          title: card.name,
           instrument,
-          balance: _.get(card, 'balance'),
+          balance: card.balance,
           syncIds: [
-            String(_.get(card, 'id')),
-            _.get(card, 'ibanNum'),
-            _.get(card, 'last4')
+            String(card.id),
+            card.ibanNum,
+            card.last4
           ]
         }
       }
@@ -178,27 +176,25 @@ export function convertCards (apiCards: unknown[]): ConvertResult[] {
     private final Calendar openDate;
     private final Long userId;
   */
-export function convertAccounts (apiAccounts: unknown[]): ConvertResult[] {
+export function convertAccounts (apiAccounts: ApiAccount[]): ConvertResult[] {
   return apiAccounts
-    .filter(account => _.get(account, 'isArrest') === true)
+    .filter(account => account.isArrest)
     .map(account => {
-      const currencyCode = _.get(account, 'currency.code') as number
-      const currencyLetterCode = _.get(account, 'currency.letterCode') as string
-      const instrument = (currencyLetterCode != null && currencyLetterCode !== '') ? currencyLetterCode : (codeToCurrencyLookup[currencyCode] ?? 'BYN')
+      const instrument = (account.currency.letterCode !== '') ? account.currency.letterCode : (codeToCurrencyLookup[account.currency.code] ?? 'BYN')
 
       return {
         product: {
-          id: Number(_.get(account, 'id'))
+          id: account.id
         },
         account: {
-          id: String(_.get(account, 'id')),
+          id: String(account.id),
           type: AccountType.checking,
-          title: _.get(account, 'name'),
+          title: account.name,
           instrument,
-          balance: _.get(account, 'amount'),
+          balance: account.amount,
           syncIds: [
-            String(_.get(account, 'id')),
-            _.get(account, 'ibanNum')
+            String(account.id),
+            account.ibanNum
           ]
         }
       }
@@ -229,60 +225,54 @@ export function convertAccounts (apiAccounts: unknown[]): ConvertResult[] {
             "favoriteId": null
         },
   */
-export function * convertTransactions (apiTransactions: unknown[]): Generator<Transaction> {
+export function * convertTransactions (apiTransactions: ApiTransaction[]): Generator<Transaction> {
   for (const transaction of apiTransactions) {
     try {
-      const summa = _.get(transaction, 'summa') as number
-      if (summa === 0) {
+      if (transaction.summa === 0) {
         // e.g. preauthorization
         continue
       }
-      const isEnrollment = _.get(transaction, 'isEnrollment') as boolean
-      const currCode = _.get(transaction, 'currCode') as string
-      const currencyTypePayer = _.get(transaction, 'currencyTypePayer') as string
-      const balanceBefore = _.get(transaction, 'balanceBefore') as number | null
-      const balanceAfter = _.get(transaction, 'balanceAfter') as number | null
 
       let sum: Movement['sum']
       let invoice: Movement['invoice']
 
-      if (currCode === currencyTypePayer) {
+      if (transaction.currCode === transaction.currencyTypePayer) {
         // No currency conversion - use summa directly
         // isEnrollment: false = outcome (expense), sum should be negative
         // isEnrollment: true = income, sum should be positive
-        sum = isEnrollment ? summa : -summa
+        sum = transaction.isEnrollment ? transaction.summa : -transaction.summa
         invoice = null
       } else {
         // Currency conversion - calculate from balance difference
-        if (balanceBefore != null && balanceAfter != null) {
-          sum = Math.round((balanceAfter - balanceBefore) * 100) / 100
+        if (transaction.balanceBefore != null && transaction.balanceAfter != null) {
+          sum = Math.round((transaction.balanceAfter - transaction.balanceBefore) * 100) / 100
         } else {
           sum = null
         }
         invoice = {
-          sum: isEnrollment ? summa : -summa,
-          instrument: currCode
+          sum: transaction.isEnrollment ? transaction.summa : -transaction.summa,
+          instrument: transaction.currCode
         }
       }
 
       yield {
         hold: false,
-        date: parseDate(_.get(transaction, 'paymentDate')),
+        date: parseDate(transaction.paymentDate),
         movements: [
           {
-            id: String(_.get(transaction, 'id')),
-            account: { id: String(_.get(transaction, 'cardId')) },
+            id: String(transaction.id),
+            account: { id: String(transaction.cardId) },
             sum,
             fee: 0,
             invoice
           }
         ],
         merchant: {
-          fullTitle: _.get(transaction, 'target'),
+          fullTitle: transaction.target,
           mcc: null,
           location: null
         },
-        comment: _.get(transaction, 'commentText')
+        comment: transaction.commentText
       }
     } catch (e) {
       console.error(e, transaction)

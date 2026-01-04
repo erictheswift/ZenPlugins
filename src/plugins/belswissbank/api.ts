@@ -5,8 +5,79 @@ import { Device, Preferences, Session } from './models'
 import { Strings } from './strings'
 import { encryptCredentials, formatToApiDate, getDevice } from './utils'
 import _ from 'lodash'
+import { z } from 'zod'
 
 const BASE_URL = 'https://mobile.bsb.by/api/v1/'
+
+const ApiCardSchema = z.looseObject({
+  id: z.number(),
+  active: z.boolean(),
+  isDeleted: z.boolean(),
+  isHiddenBalance: z.boolean(),
+  name: z.string(),
+  currencies: z.number(),
+  currencyLetter: z.string(),
+  balance: z.number(),
+  ibanNum: z.string(),
+  last4: z.string()
+})
+
+const ApiAccountSchema = z.looseObject({
+  id: z.number(),
+  isArrest: z.boolean(),
+  name: z.string(),
+  amount: z.number(),
+  ibanNum: z.string(),
+  currency: z.object({
+    code: z.number(),
+    letterCode: z.string()
+  })
+})
+
+const ApiTransactionSchema = z.looseObject({
+  id: z.number(),
+  cardId: z.number(),
+  summa: z.number(),
+  isEnrollment: z.boolean(),
+  currCode: z.string(),
+  currencyTypePayer: z.string(),
+  balanceBefore: z.number().nullable(),
+  balanceAfter: z.number().nullable(),
+  paymentDate: z.string(),
+  target: z.string(),
+  commentText: z.string().nullable()
+})
+
+const BadRequestResponseBody = z.looseObject({
+  code: z.string(),
+  payload: z.looseObject({
+    userDeviceId: z.string(),
+    userLoginId: z.number()
+  })
+})
+
+const AuthLoginOkResponseBody = z.looseObject({
+  tokenContainer: z.looseObject({
+    accessToken: z.string()
+  }),
+  widgetTokenContainer: z.looseObject({
+    widgetToken: z.string()
+  })
+})
+
+const SearchPaymentsOkResponseBody = z.looseObject({
+  payments: z.array(z.unknown()),
+  totalPage: z.number().optional().default(1),
+  currentPage: z.number().optional().default(1)
+})
+
+export type ApiCard = z.infer<typeof ApiCardSchema>
+export type ApiAccount = z.infer<typeof ApiAccountSchema>
+export type ApiTransaction = z.infer<typeof ApiTransactionSchema>
+
+function parseArrayAllOrNothing<T extends z.ZodTypeAny> (elementType: T, array: unknown): Array<z.infer<T>> {
+  return z.array(elementType).parse(array)
+}
 
 interface LoginResponse {
   needSecondFactor: boolean
@@ -48,21 +119,21 @@ export class Api {
     this.device = getDevice()
   }
 
-  async fetchCards (): Promise<unknown[]> {
+  async fetchCards (): Promise<ApiCard[]> {
     const response = await this.fetchApi('card-management/cards/actual?with-tokenized=false&with-hidden=false', {
       method: 'GET'
     })
-    return response.body as unknown[]
+    return parseArrayAllOrNothing(ApiCardSchema, response.body)
   }
 
-  async fetchAccounts (): Promise<unknown[]> {
+  async fetchAccounts (): Promise<ApiAccount[]> {
     const response = await this.fetchApi('account-management/accounts?is-bpk=false&is-arrest=false&with-expired-card=false', {
       method: 'GET'
     })
-    return response.body as unknown[]
+    return parseArrayAllOrNothing(ApiAccountSchema, response.body)
   }
 
-  async fetchTransactions (cardId: number, fromDate: Date, toDate: Date): Promise<unknown[]> {
+  async fetchTransactions (cardId: number, fromDate: Date, toDate: Date): Promise<ApiTransaction[]> {
     const pageSize = 50
     let pageNumber = 1
     let finished = false
@@ -84,9 +155,7 @@ export class Api {
         }
       })
 
-      const payments = _.get(response.body, 'payments') as unknown[]
-      const totalPages = _.get(response.body, 'totalPage', 1) as number
-      const currentPage = _.get(response.body, 'currentPage', 1) as number
+      const { payments, currentPage, totalPage: totalPages } = SearchPaymentsOkResponseBody.parse(response.body)
 
       pageNumber += 1
       if (currentPage >= totalPages) {
@@ -95,7 +164,7 @@ export class Api {
 
       transactions.push(...payments)
     }
-    return transactions
+    return parseArrayAllOrNothing(ApiTransactionSchema, transactions)
   }
 
   async login (isInBackground: boolean): Promise<void> {
@@ -199,23 +268,25 @@ export class Api {
       isUnhandled: () => false
     })
     if (response.status === 400) {
-      if (_.get(response.body, 'code') !== 'MAS-0007') {
+      const { code, payload: { userDeviceId, userLoginId } } = BadRequestResponseBody.parse(response.body)
+      if (code !== 'MAS-0007') {
         raiseUnhandledResponse(response)
       }
 
       return {
         needSecondFactor: true,
         payload: {
-          userDeviceId: _.get(response.body, 'payload.userDeviceId'),
-          userLoginId: _.get(response.body, 'payload.userLoginId')
+          userDeviceId,
+          userLoginId
         }
       }
     } else if (response.status === 200) {
+      const { tokenContainer: { accessToken }, widgetTokenContainer: { widgetToken } } = AuthLoginOkResponseBody.parse(response.body)
       return {
         needSecondFactor: false,
         tokens: {
-          accessToken: _.get(response.body, 'tokenContainer.accessToken'),
-          widgetToken: _.get(response.body, 'widgetTokenContainer.widgetToken')
+          accessToken,
+          widgetToken
         }
       }
     } else {
